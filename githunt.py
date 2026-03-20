@@ -488,6 +488,20 @@ async def run_scan(
         )
         console.print(f"  → [bold green]{valid_count}[/bold green] credentials confirmed VALID")
 
+    # ── Global cross-source deduplication ─────────────────────────── #
+    # The same credential can be found in both the current file tree and a
+    # commit diff.  Deduplicate by (repo, type, matched_value) so the report
+    # shows each unique secret only once (the earliest / highest-severity hit
+    # is kept).
+    seen_global: set = set()
+    deduped: List[dict] = []
+    for f in all_findings:
+        key = (f["repo"], f["type"], f["matched_value"])
+        if key not in seen_global:
+            seen_global.add(key)
+            deduped.append(f)
+    all_findings = deduped
+
     return all_findings
 
 
