@@ -2,13 +2,81 @@
 """
 GitHunt - GitHub Credential Exposure Crawler
 Usage: python githunt.py --keyword "komdigi.go.id" --token YOUR_GITHUB_TOKEN
+       python githunt.py --keyword "komdigi.go.id"  # token otomatis dipakai setelah disimpan
 """
 
 import argparse
+import errno
+import getpass
+import os
 import sys
+from typing import Optional
 from core.crawler import GitHubCrawler
 from core.scanner import CredentialScanner
-from output.reporter import Reporter
+from core.reporter import Reporter
+
+TOKEN_PATH = os.path.join(os.path.expanduser("~"), ".githunt_token")
+
+
+def load_saved_token(token_path: str = TOKEN_PATH) -> Optional[str]:
+    try:
+        with open(token_path, "r") as handle:
+            token = handle.read().strip()
+            return token or None
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EPERM}:
+            message = "Tidak punya izin untuk membaca token tersimpan."
+        elif exc.errno == errno.EIO:
+            message = "Terjadi kesalahan I/O saat membaca token tersimpan."
+        else:
+            message = "Terjadi kesalahan saat membaca token tersimpan."
+        print(f"[!] {message}", file=sys.stderr)
+        return None
+
+
+def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
+    try:
+        with open(token_path, "w") as handle:
+            handle.write(token.strip())
+        try:
+            os.chmod(token_path, 0o600)
+        except OSError:
+            print("[!] Peringatan: Tidak bisa mengatur permission file token.", file=sys.stderr)
+            print("[!] File token mungkin dapat dibaca oleh pengguna lain.", file=sys.stderr)
+        print(f"[*] Token disimpan di {token_path}")
+    except OSError:
+        print("[!] Gagal menyimpan token.", file=sys.stderr)
+
+
+def resolve_token(passed_token: Optional[str]) -> str:
+    saved_token = load_saved_token()
+
+    if passed_token:
+        if passed_token != saved_token:
+            save_token(passed_token)
+        return passed_token
+
+    if saved_token:
+        return saved_token
+
+    if not sys.stdin.isatty():
+        print("[!] Token belum tersimpan. Jalankan dengan --token atau jalankan interaktif.", file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        token = getpass.getpass("GitHub token (akan disimpan secara lokal): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("\n[!] Input token dibatalkan.", file=sys.stderr)
+        sys.exit(1)
+
+    if not token:
+        print("[!] Token kosong. Jalankan ulang dan masukkan token.", file=sys.stderr)
+        sys.exit(1)
+
+    save_token(token)
+    return token
 
 
 def banner():
@@ -36,8 +104,8 @@ def parse_args():
     )
     parser.add_argument(
         "--token", "-t",
-        required=True,
-        help="GitHub Personal Access Token"
+        required=False,
+        help="GitHub Personal Access Token (disimpan otomatis setelah input pertama)"
     )
     parser.add_argument(
         "--output", "-o",
@@ -74,8 +142,10 @@ def main():
     print(f"[*] Validate creds : {args.validate}")
     print("-" * 50)
 
+    token = resolve_token(args.token)
+
     # Initialize components
-    crawler = GitHubCrawler(token=args.token, max_repos=args.max_repos)
+    crawler = GitHubCrawler(token=token, max_repos=args.max_repos)
     scanner = CredentialScanner()
     reporter = Reporter(output_format=args.output)
 
