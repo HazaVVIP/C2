@@ -332,6 +332,129 @@ PATTERNS = [
         "severity": "HIGH",
         "min_entropy": 3.5,
     },
+
+    # ── AI / ML Providers ─────────────────────────────────────────── #
+    {
+        "name": "OpenAI API Key",
+        "regex": re.compile(r"sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "OpenAI API Key (new format)",
+        "regex": re.compile(r"sk-proj-[A-Za-z0-9_-]{50,}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Anthropic API Key",
+        "regex": re.compile(r"sk-ant-[A-Za-z0-9_-]{93,}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Hugging Face API Token",
+        "regex": re.compile(r"hf_[A-Za-z0-9]{34,}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+
+    # ── Observability & Monitoring ────────────────────────────────── #
+    {
+        "name": "Datadog API Key",
+        "regex": re.compile(
+            r"(?i)datadog.{0,20}['\"]([A-Za-z0-9]{32})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Datadog App Key",
+        "regex": re.compile(
+            r"(?i)dd.app.key.{0,20}['\"]([A-Za-z0-9]{40})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "New Relic API Key",
+        "regex": re.compile(r"NRAK-[A-Z0-9]{27}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "New Relic License Key",
+        "regex": re.compile(r"[A-Za-z0-9]{40}NRAL"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Grafana API Key",
+        "regex": re.compile(r"eyJrIjoi[A-Za-z0-9+/=]{40,}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "PagerDuty API Key",
+        "regex": re.compile(
+            r"(?i)pagerduty.{0,20}['\"]([A-Za-z0-9+/]{20,})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+
+    # ── Identity & Access Management ──────────────────────────────── #
+    {
+        "name": "Okta API Token",
+        "regex": re.compile(r"00[A-Za-z0-9_-]{40}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Atlassian API Token",
+        "regex": re.compile(
+            r"(?i)atlassian.{0,20}['\"]([A-Za-z0-9_\-]{24,})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+
+    # ── Infrastructure / DevOps ───────────────────────────────────── #
+    {
+        "name": "HashiCorp Vault Token",
+        "regex": re.compile(r"(?:hvs|s)\.[A-Za-z0-9]{24,}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Linear API Key",
+        "regex": re.compile(r"lin_api_[A-Za-z0-9]{40}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Azure Client Secret",
+        "regex": re.compile(
+            r"(?i)(?:client.?secret|clientsecret)\s*[:=]\s*['\"]([A-Za-z0-9~._\-]{30,})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Alibaba Cloud AccessKey ID",
+        "regex": re.compile(r"LTAI[0-9A-Za-z]{16,20}"),
+        "severity": "HIGH",
+        "min_entropy": 3.0,
+    },
+    {
+        "name": "LaunchDarkly SDK Key",
+        "regex": re.compile(
+            r"sdk-[A-Za-z0-9_-]{8}-[A-Za-z0-9_-]{4}-"
+            r"[A-Za-z0-9_-]{4}-[A-Za-z0-9_-]{4}-[A-Za-z0-9_-]{12}"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
 ]
 
 # Lines to ignore (common false positives)

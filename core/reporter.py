@@ -1,6 +1,6 @@
 """
 core/reporter.py
-Generates reports from scan findings in JSON, CSV, or HTML format.
+Generates reports from scan findings in JSON, CSV, HTML, SARIF, or Markdown format.
 """
 
 import csv
@@ -12,6 +12,17 @@ from datetime import datetime
 from typing import List, Dict
 
 logger = logging.getLogger(__name__)
+
+TOOL_VERSION = "2.0.0"
+
+# Explicit mapping from output format name to file extension
+_FORMAT_EXT: dict = {
+    "json": "json",
+    "csv": "csv",
+    "html": "html",
+    "sarif": "sarif",
+    "markdown": "md",
+}
 
 
 class Reporter:
@@ -25,9 +36,10 @@ class Reporter:
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_keyword = keyword.replace("/", "_").replace(".", "_")
+        ext = _FORMAT_EXT.get(self.format, self.format)
         filename = os.path.join(
             self.output_dir,
-            f"githunt_{safe_keyword}_{timestamp}.{self.format}"
+            f"githunt_{safe_keyword}_{timestamp}.{ext}"
         )
 
         if self.format == "json":
@@ -36,6 +48,10 @@ class Reporter:
             self._save_csv(findings, filename)
         elif self.format == "html":
             self._save_html(findings, filename, keyword)
+        elif self.format == "sarif":
+            self._save_sarif(findings, filename, keyword)
+        elif self.format == "markdown":
+            self._save_markdown(findings, filename, keyword)
 
         logger.info("Report saved to %s", filename)
         return filename
@@ -44,6 +60,7 @@ class Reporter:
         report = {
             "meta": {
                 "tool": "GitHunt",
+                "version": TOOL_VERSION,
                 "keyword": keyword,
                 "generated_at": datetime.utcnow().isoformat(),
                 "total_findings": len(findings),
@@ -63,7 +80,8 @@ class Reporter:
             return
 
         fields = ["severity", "type", "repo", "filename", "line_number",
-                  "matched_value", "source_url", "timestamp", "entropy"]
+                  "matched_value", "source_url", "timestamp", "entropy",
+                  "validation_status"]
 
         with open(filename, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
@@ -87,6 +105,10 @@ class Reporter:
             esc_line     = html.escape(str(f["line_number"]))
             esc_value    = html.escape(f["matched_value"])
             entropy_val  = html.escape(str(f.get("entropy", "")))
+            validation   = html.escape(str(f.get("validation_status", "")))
+            val_color    = {
+                "VALID": "#00ff88", "INVALID": "#888", "RATE_LIMITED": "#ffa64d"
+            }.get(f.get("validation_status", ""), "#aaa")
             return (
                 f"<tr>"
                 f'<td style="background:{color};font-weight:bold">{esc_sev}</td>'
@@ -96,6 +118,7 @@ class Reporter:
                 f"<td>{esc_line}</td>"
                 f"<td><code>{esc_value}</code></td>"
                 f"<td>{entropy_val}</td>"
+                f'<td style="color:{val_color};font-weight:bold">{validation}</td>'
                 f"</tr>"
             )
 
@@ -127,7 +150,7 @@ class Reporter:
 </head>
 <body>
   <h1>&#128269; GitHunt Report</h1>
-  <p>Keyword: <strong>{esc_keyword}</strong> | Generated: {generated}</p>
+  <p>Keyword: <strong>{esc_keyword}</strong> | Generated: {generated} | Version: {TOOL_VERSION}</p>
 
   <div class="summary">
     <div class="card high"><h2>{len(high)}</h2>HIGH</div>
@@ -138,7 +161,7 @@ class Reporter:
   <table>
     <tr>
       <th>Severity</th><th>Type</th><th>Repository</th>
-      <th>File</th><th>Line</th><th>Value</th><th>Entropy</th>
+      <th>File</th><th>Line</th><th>Value</th><th>Entropy</th><th>Validation</th>
     </tr>
     {rows_html}
   </table>
@@ -146,3 +169,160 @@ class Reporter:
 
         with open(filename, "w", encoding="utf-8") as fh:
             fh.write(page)
+
+    def _save_sarif(self, findings: List[Dict], filename: str, keyword: str) -> None:
+        """
+        Emit a SARIF 2.1.0 report compatible with GitHub Advanced Security /
+        Code Scanning and any SARIF-aware CI tool.
+        """
+        # Build the rule set from unique finding types
+        rule_ids: dict = {}
+        for f in findings:
+            ctype = f["type"]
+            if ctype not in rule_ids:
+                rule_ids[ctype] = {
+                    "id": ctype.replace(" ", "_").replace("/", "_"),
+                    "name": ctype,
+                    "shortDescription": {"text": ctype},
+                    "fullDescription": {
+                        "text": f"Detects exposed {ctype} credentials in source code."
+                    },
+                    "defaultConfiguration": {
+                        "level": _sarif_level(f["severity"])
+                    },
+                    "helpUri": "https://github.com/HazaVVIP/C2",
+                    "properties": {"tags": ["security", "credential-exposure"]},
+                }
+
+        results = []
+        for f in findings:
+            rule_id = f["type"].replace(" ", "_").replace("/", "_")
+            result: dict = {
+                "ruleId": rule_id,
+                "level": _sarif_level(f["severity"]),
+                "message": {
+                    "text": (
+                        f"{f['type']} found in {f['repo']} "
+                        f"({f['filename']}:{f['line_number']})"
+                    )
+                },
+                "locations": [
+                    {
+                        "physicalLocation": {
+                            "artifactLocation": {
+                                "uri": f["source_url"],
+                                "uriBaseId": "%SRCROOT%",
+                            },
+                            "region": {
+                                "startLine": f["line_number"],
+                                "snippet": {"text": f.get("line_content", "")},
+                            },
+                        }
+                    }
+                ],
+                "partialFingerprints": {
+                    "primaryLocationLineHash": f["id"],
+                },
+                "properties": {
+                    "entropy": f.get("entropy"),
+                    "matched_value": f["matched_value"],
+                    "validation_status": f.get("validation_status", "UNKNOWN"),
+                },
+            }
+            results.append(result)
+
+        sarif_doc = {
+            "version": "2.1.0",
+            "$schema": (
+                "https://raw.githubusercontent.com/oasis-tcs/sarif-spec"
+                "/master/Schemata/sarif-schema-2.1.0.json"
+            ),
+            "runs": [
+                {
+                    "tool": {
+                        "driver": {
+                            "name": "GitHunt",
+                            "version": TOOL_VERSION,
+                            "informationUri": "https://github.com/HazaVVIP/C2",
+                            "rules": list(rule_ids.values()),
+                        }
+                    },
+                    "results": results,
+                    "properties": {
+                        "keyword": keyword,
+                        "generatedAt": datetime.utcnow().isoformat(),
+                    },
+                }
+            ],
+        }
+
+        with open(filename, "w", encoding="utf-8") as fh:
+            json.dump(sarif_doc, fh, indent=2, ensure_ascii=False)
+
+    def _save_markdown(self, findings: List[Dict], filename: str, keyword: str) -> None:
+        """
+        Emit a Markdown report suitable for GitHub Issues, PR comments,
+        Slack messages, or any Markdown renderer.
+        """
+        high   = [f for f in findings if f["severity"] == "HIGH"]
+        medium = [f for f in findings if f["severity"] == "MEDIUM"]
+        low    = [f for f in findings if f["severity"] == "LOW"]
+
+        lines = [
+            f"# 🔍 GitHunt Report — `{keyword}`",
+            "",
+            f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  ",
+            f"**Total findings:** {len(findings)}",
+            "",
+            "## Summary",
+            "",
+            "| Severity | Count |",
+            "|----------|------:|",
+            f"| 🔴 HIGH   | {len(high)} |",
+            f"| 🟡 MEDIUM | {len(medium)} |",
+            f"| 🔵 LOW    | {len(low)} |",
+            "",
+        ]
+
+        if findings:
+            lines += [
+                "## Findings",
+                "",
+                "| Severity | Type | Repository | File | Line | Entropy | Validation |",
+                "|----------|------|------------|------|-----:|--------:|------------|",
+            ]
+            for f in findings:
+                sev_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(f["severity"], "⚪")
+                repo_link = f"[{f['repo']}]({f['source_url']})"
+                val = f.get("validation_status", "")
+                lines.append(
+                    f"| {sev_icon} {f['severity']} "
+                    f"| {f['type']} "
+                    f"| {repo_link} "
+                    f"| `{f['filename']}` "
+                    f"| {f['line_number']} "
+                    f"| {f.get('entropy', '')} "
+                    f"| {val} |"
+                )
+        else:
+            lines.append("_No findings._")
+
+        lines += [
+            "",
+            "---",
+            "_Report generated by [GitHunt](https://github.com/HazaVVIP/C2) "
+            "— for authorized security research only._",
+        ]
+
+        with open(filename, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+
+
+# ------------------------------------------------------------------ #
+#  Helpers                                                             #
+# ------------------------------------------------------------------ #
+
+def _sarif_level(severity: str) -> str:
+    """Map GitHunt severity to SARIF level."""
+    return {"HIGH": "error", "MEDIUM": "warning", "LOW": "note"}.get(severity, "warning")
+
