@@ -25,7 +25,7 @@ def load_saved_token(token_path: str = TOKEN_PATH) -> Optional[str]:
     except FileNotFoundError:
         return None
     except OSError:
-        print("[!] Gagal membaca token tersimpan.", file=sys.stderr)
+        print("[!] Gagal membaca token tersimpan. Periksa izin atau isi file.", file=sys.stderr)
         return None
 
 
@@ -38,9 +38,6 @@ def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
             except OSError:
                 print("[!] Gagal membuat direktori token.", file=sys.stderr)
                 return
-        if not os.access(token_dir, os.W_OK):
-            print(f"[!] Tidak ada izin menulis token di: {token_dir}", file=sys.stderr)
-            return
 
         with open(token_path, "w") as handle:
             handle.write(token.strip())
@@ -66,11 +63,11 @@ def resolve_token(passed_token: Optional[str]) -> str:
         return saved_token
 
     if not sys.stdin.isatty():
-        print("[!] Token belum tersimpan. Jalankan dengan --token.", file=sys.stderr)
+        print("[!] Token belum tersimpan. Jalankan dengan --token atau jalankan interaktif.", file=sys.stderr)
         sys.exit(1)
 
     try:
-        token = getpass.getpass("GitHub token (disimpan untuk penggunaan berikutnya): ").strip()
+        token = getpass.getpass(f"GitHub token (disimpan di {TOKEN_PATH}): ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n[!] Input token dibatalkan.", file=sys.stderr)
         sys.exit(1)
