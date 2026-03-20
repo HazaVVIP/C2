@@ -213,6 +213,32 @@ def banner() -> None:
 
 
 # ------------------------------------------------------------------ #
+#  Live finding output                                                 #
+# ------------------------------------------------------------------ #
+
+_SEV_COLOR: dict = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "blue"}
+
+
+def _print_finding_live(finding: dict) -> None:
+    """
+    Print a single finding immediately so results are never lost if the
+    program hangs mid-scan.  Only HIGH and MEDIUM findings are emitted to
+    avoid flooding the terminal with low-signal noise.
+    """
+    sev = finding["severity"]
+    if sev not in ("HIGH", "MEDIUM"):
+        return
+    color = _SEV_COLOR.get(sev, "white")
+    count = finding.get("count", 1)
+    count_str = f" [dim](×{count})[/dim]" if count > 1 else ""
+    console.print(
+        f"  ⚡ [{color}]{sev}[/{color}] {finding['type']}{count_str} | "
+        f"[dim]{finding['repo']}[/dim] @ "
+        f"[cyan]{finding['filename']}:{finding['line_number']}[/cyan]"
+    )
+
+
+# ------------------------------------------------------------------ #
 #  CLI                                                                 #
 # ------------------------------------------------------------------ #
 
@@ -286,12 +312,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--deep",
         action="store_true",
-        help="Enable deep scan (includes commit history)",
-    )
-    parser.add_argument(
-        "--scan-gists",
-        action="store_true",
-        help="Also search public GitHub Gists for the keyword",
+        help=(
+            "Enable deep scan mode: includes commit history scanning, "
+            "public Gist search, and all other available techniques. "
+            "Recommended for thorough bug-hunting runs."
+        ),
     )
     parser.add_argument(
         "--validate",
@@ -353,17 +378,17 @@ async def run_scan(
                 crawler.search_repositories(keyword),
                 crawler.search_code(keyword),
             ]
-            if args.scan_gists:
+            if args.deep:
                 search_tasks.append(crawler.search_gists(keyword))
 
             search_results = await asyncio.gather(*search_tasks)
             repos = search_results[0]
             code_results = search_results[1]
-            gist_results: List[dict] = search_results[2] if args.scan_gists else []
+            gist_results: List[dict] = search_results[2] if args.deep else []
 
             console.print(f"  → Found [bold]{len(repos)}[/bold] repositories")
             console.print(f"  → Found [bold]{len(code_results)}[/bold] code matches")
-            if args.scan_gists:
+            if args.deep:
                 console.print(f"  → Found [bold]{len(gist_results)}[/bold] gist matches")
 
         # ── Step 2: Crawl ──────────────────────────────────────────── #
@@ -397,6 +422,8 @@ async def run_scan(
                                 repo=repo["full_name"],
                                 filename=file_info["path"],
                             )
+                            for f in findings:
+                                _print_finding_live(f)
                             all_findings.extend(findings)
 
                 # Deep scan: commit history
@@ -415,6 +442,8 @@ async def run_scan(
                             repo=repo["full_name"],
                             filename=f"[commit] {commit['sha'][:8]}",
                         )
+                        for f in findings:
+                            _print_finding_live(f)
                         all_findings.extend(findings)
 
                 progress.advance(repo_task)
@@ -430,10 +459,12 @@ async def run_scan(
                         repo=result.get("repository", {}).get("full_name", "unknown"),
                         filename=result.get("path", "unknown"),
                     )
+                    for f in findings:
+                        _print_finding_live(f)
                     all_findings.extend(findings)
 
-        # Scan gist results
-        if args.scan_gists and gist_results:
+        # Scan gist results (deep mode)
+        if args.deep and gist_results:
             gist_contents = await crawler.get_files_content_batch(gist_results)
             for result, content in zip(gist_results, gist_contents):
                 if content:
@@ -443,6 +474,8 @@ async def run_scan(
                         repo=result.get("repository", {}).get("full_name", "gist"),
                         filename=result.get("path", "unknown"),
                     )
+                    for f in findings:
+                        _print_finding_live(f)
                     all_findings.extend(findings)
 
     # ── Optional: Validate credentials ────────────────────────────── #
@@ -532,7 +565,6 @@ def main() -> None:
     console.print(f"[*] Max repos       : {args.max_repos}")
     console.print(f"[*] Concurrency     : {args.concurrency}")
     console.print(f"[*] Deep scan       : {args.deep}")
-    console.print(f"[*] Scan gists      : {args.scan_gists}")
     console.print(f"[*] Validate creds  : {args.validate}")
     console.print(f"[*] Output format   : {args.output}")
     console.print(f"[*] Output dir      : {args.output_dir}")
@@ -575,10 +607,10 @@ def main() -> None:
         summary.add_row("TOTAL", str(len(all_findings)))
     console.print(summary)
 
-    # Use the first keyword as the report label when multiple keywords are used
-    report_keyword = keywords[0] if len(keywords) == 1 else f"multi_{len(keywords)}_keywords"
+    # Use a stable label for the report filename (first keyword or "multi_N")
+    report_label = keywords[0] if len(keywords) == 1 else f"multi_{len(keywords)}_keywords"
     reporter = Reporter(output_format=args.output, output_dir=args.output_dir)
-    output_file = reporter.save(all_findings, keyword=report_keyword)
+    output_file = reporter.save(all_findings, keyword=report_label)
     console.print(f"\n[bold green][✓][/bold green] Report saved to: [underline]{output_file}[/underline]")
 
 

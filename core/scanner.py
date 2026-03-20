@@ -384,7 +384,7 @@ PATTERNS = [
     },
     {
         "name": "New Relic License Key",
-        "regex": re.compile(r"[A-Za-z0-9]{40}NRAL"),
+        "regex": re.compile(r"(?<![A-Za-z0-9])[A-Za-z0-9]{40}NRAL(?![A-Za-z0-9])"),
         "severity": "HIGH",
         "min_entropy": 4.0,
     },
@@ -531,7 +531,7 @@ class CredentialScanner:
 
                 findings.append(finding)
 
-        return self._deduplicate(findings)
+        return self._group_by_source(self._deduplicate(findings))
 
     def _is_false_positive(self, line: str) -> bool:
         """Check if a line is likely a false positive."""
@@ -554,3 +554,27 @@ class CredentialScanner:
                 seen.add(key)
                 unique.append(f)
         return unique
+
+    def _group_by_source(self, findings: List[Dict]) -> List[Dict]:
+        """
+        Consolidate findings that share the same (repo, filename, type) into
+        a single entry.  The first occurrence is used as the representative
+        finding; additional occurrences increment the ``count`` field and append
+        their line number to ``line_numbers``.
+
+        This prevents files that contain many credentials of the same type
+        (e.g. an email dump or a credential list) from flooding the output
+        with hundreds of near-identical rows.
+        """
+        groups: Dict[tuple, Dict] = {}
+        for f in findings:
+            key = (f["repo"], f["filename"], f["type"])
+            if key not in groups:
+                entry = dict(f)
+                entry["count"] = 1
+                entry["line_numbers"] = [f["line_number"]]
+                groups[key] = entry
+            else:
+                groups[key]["count"] += 1
+                groups[key]["line_numbers"].append(f["line_number"])
+        return list(groups.values())

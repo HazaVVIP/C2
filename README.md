@@ -14,11 +14,8 @@ python githunt.py --keyword "komdigi.go.id" --token ghp_YOUR_TOKEN
 # Setelah token tersimpan, cukup jalankan:
 python githunt.py --keyword "komdigi.go.id"
 
-# Deep scan (termasuk commit history)
+# Deep scan (termasuk commit history DAN gists publik)
 python githunt.py --keyword "komdigi.go.id" --token ghp_YOUR_TOKEN --deep
-
-# Scan sekaligus gists publik
-python githunt.py --keyword "komdigi.go.id" --scan-gists
 
 # Validasi apakah credential yang ditemukan masih aktif
 python githunt.py --keyword "komdigi.go.id" --validate
@@ -53,8 +50,7 @@ python githunt.py --keyword "komdigi.go.id" --verbose
 | `--output-dir` | Direktori untuk menyimpan report | `.` (current dir) |
 | `--max-repos` | Maks repo yang di-crawl | 50 |
 | `--concurrency` | Jumlah async HTTP request paralel | 10 |
-| `--deep` | Scan commit history juga | off |
-| `--scan-gists` | Cari juga di GitHub Gists publik | off |
+| `--deep` | Scan commit history + gists publik (semua teknik) | off |
 | `--validate` | Validasi apakah credential masih aktif | off |
 | `--verbose` | Tampilkan debug log | off |
 
@@ -65,7 +61,7 @@ keyword input (tunggal atau file)
     │
     ├─→ GitHub Search API (repositories)  ─┐
     ├─→ GitHub Code Search API (files)    ─┤ asyncio.gather (parallel)
-    ├─→ [--scan-gists] Gist Search        ─┘
+    └─→ [--deep] Gist Search              ─┘
     │
     ▼
 Crawl tiap repo (aiohttp + asyncio)

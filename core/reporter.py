@@ -4,6 +4,7 @@ Generates reports from scan findings in JSON, CSV, HTML, SARIF, or Markdown form
 """
 
 import csv
+import hashlib
 import html
 import json
 import logging
@@ -35,11 +36,11 @@ class Reporter:
         os.makedirs(self.output_dir, exist_ok=True)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        safe_keyword = keyword.replace("/", "_").replace(".", "_")
+        kw_hash = hashlib.sha256(keyword.encode()).hexdigest()[:8]
         ext = _FORMAT_EXT.get(self.format, self.format)
         filename = os.path.join(
             self.output_dir,
-            f"githunt_{safe_keyword}_{timestamp}.{ext}"
+            f"githunt_{kw_hash}_{timestamp}.{ext}"
         )
 
         if self.format == "json":
@@ -80,8 +81,8 @@ class Reporter:
             return
 
         fields = ["severity", "type", "repo", "filename", "line_number",
-                  "matched_value", "source_url", "timestamp", "entropy",
-                  "validation_status"]
+                  "count", "line_numbers", "matched_value", "source_url",
+                  "timestamp", "entropy", "validation_status"]
 
         with open(filename, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
@@ -103,6 +104,7 @@ class Reporter:
             esc_url      = html.escape(f["source_url"])
             esc_filename = html.escape(f["filename"])
             esc_line     = html.escape(str(f["line_number"]))
+            count_val    = html.escape(str(f.get("count", 1)))
             esc_value    = html.escape(f["matched_value"])
             entropy_val  = html.escape(str(f.get("entropy", "")))
             validation   = html.escape(str(f.get("validation_status", "")))
@@ -116,6 +118,7 @@ class Reporter:
                 f'<td><a href="{esc_url}" target="_blank" rel="noopener noreferrer">{esc_repo}</a></td>'
                 f"<td>{esc_filename}</td>"
                 f"<td>{esc_line}</td>"
+                f"<td style='text-align:center'>{count_val}</td>"
                 f"<td><code>{esc_value}</code></td>"
                 f"<td>{entropy_val}</td>"
                 f'<td style="color:{val_color};font-weight:bold">{validation}</td>'
@@ -158,11 +161,11 @@ class Reporter:
     <div class="card low"><h2>{len(low)}</h2>LOW</div>
   </div>
 
-  <table>
-    <tr>
-      <th>Severity</th><th>Type</th><th>Repository</th>
-      <th>File</th><th>Line</th><th>Value</th><th>Entropy</th><th>Validation</th>
-    </tr>
+    <table>
+     <tr>
+       <th>Severity</th><th>Type</th><th>Repository</th>
+       <th>File</th><th>Line</th><th>Count</th><th>Value</th><th>Entropy</th><th>Validation</th>
+     </tr>
     {rows_html}
   </table>
 </body></html>"""
@@ -288,19 +291,21 @@ class Reporter:
             lines += [
                 "## Findings",
                 "",
-                "| Severity | Type | Repository | File | Line | Entropy | Validation |",
-                "|----------|------|------------|------|-----:|--------:|------------|",
+                "| Severity | Type | Repository | File | Line | Count | Entropy | Validation |",
+                "|----------|------|------------|------|-----:|------:|--------:|------------|",
             ]
             for f in findings:
                 sev_icon = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🔵"}.get(f["severity"], "⚪")
                 repo_link = f"[{f['repo']}]({f['source_url']})"
                 val = f.get("validation_status", "")
+                count = f.get("count", 1)
                 lines.append(
                     f"| {sev_icon} {f['severity']} "
                     f"| {f['type']} "
                     f"| {repo_link} "
                     f"| `{f['filename']}` "
                     f"| {f['line_number']} "
+                    f"| {count} "
                     f"| {f.get('entropy', '')} "
                     f"| {val} |"
                 )
