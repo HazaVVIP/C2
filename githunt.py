@@ -31,10 +31,20 @@ def load_saved_token(token_path: str = TOKEN_PATH) -> Optional[str]:
 
 def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
     try:
+        token_dir = os.path.dirname(token_path) or "."
+        if not os.path.isdir(token_dir):
+            print(f"[!] Direktori token tidak ditemukan: {token_dir}", file=sys.stderr)
+            return
+        if not os.access(token_dir, os.W_OK):
+            print(f"[!] Tidak ada izin menulis token di: {token_dir}", file=sys.stderr)
+            return
+
         with open(token_path, "w") as handle:
             handle.write(token.strip())
-        if os.name != "nt":
+        try:
             os.chmod(token_path, 0o600)
+        except OSError:
+            print("[!] Tidak bisa mengatur permission file token.", file=sys.stderr)
         print(f"[*] Token disimpan di {token_path}")
     except OSError as exc:
         print(f"[!] Gagal menyimpan token: {exc}", file=sys.stderr)
