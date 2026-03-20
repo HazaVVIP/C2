@@ -8,8 +8,11 @@ Tools untuk **authorized security research** — menelusuri GitHub dan mendeteks
 # Install dependencies
 pip install -r requirements.txt
 
-# Basic scan
+# Basic scan (input token sekali di awal)
 python githunt.py --keyword "komdigi.go.id" --token ghp_YOUR_TOKEN
+
+# Setelah token tersimpan, cukup jalankan:
+python githunt.py --keyword "komdigi.go.id"
 
 # Deep scan (termasuk commit history)
 python githunt.py --keyword "komdigi.go.id" --token ghp_YOUR_TOKEN --deep
@@ -23,7 +26,7 @@ python githunt.py --keyword "komdigi.go.id" --token ghp_YOUR_TOKEN --output html
 | Flag | Deskripsi | Default |
 |------|-----------|---------|
 | `--keyword` | Kata kunci pencarian | *required* |
-| `--token` | GitHub Personal Access Token | *required* |
+| `--token` | GitHub Personal Access Token (dibutuhkan sekali) | *opsional setelah tersimpan* |
 | `--output` | Format output: json, csv, html | json |
 | `--max-repos` | Maks repo yang di-crawl | 50 |
 | `--deep` | Scan commit history juga | off |
@@ -68,6 +71,10 @@ Report (JSON / CSV / HTML)
 
 Buat token di: https://github.com/settings/tokens
 Scope yang dibutuhkan: `public_repo` (read-only cukup)
+
+Token akan disimpan otomatis di `~/.githunt_token` setelah input pertama,
+sehingga pemakaian berikutnya tidak perlu `--token`. Jika ingin mengganti token,
+hapus file tersebut lalu jalankan ulang dengan `--token`.
 
 ## ⚠️ Disclaimer
 
