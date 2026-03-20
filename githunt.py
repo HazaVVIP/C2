@@ -3,6 +3,8 @@
 GitHunt - GitHub Credential Exposure Crawler
 Usage: python githunt.py --keyword "komdigi.go.id" --token YOUR_GITHUB_TOKEN
        python githunt.py --keyword "komdigi.go.id"  # token otomatis dipakai setelah disimpan
+       python githunt.py --keyword "example" -u https://github.com/owner/repo
+       python githunt.py --keyword "example" -g "https://ghp_TOKEN@github.com/owner/repo.git"
 """
 
 import argparse
@@ -12,7 +14,8 @@ import getpass
 import logging
 import os
 import sys
-from typing import List, Optional
+from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 from rich.console import Console
 from rich.logging import RichHandler
@@ -100,6 +103,75 @@ def resolve_token(passed_token: Optional[str]) -> str:
 
 
 # ------------------------------------------------------------------ #
+#  URL / git-config helpers                                            #
+# ------------------------------------------------------------------ #
+
+def parse_repo_fullname(url_or_slug: str) -> Optional[str]:
+    """
+    Accept various GitHub repo references and return ``owner/repo``.
+
+    Supported formats:
+    - ``owner/repo``
+    - ``https://github.com/owner/repo``
+    - ``https://github.com/owner/repo.git``
+    - ``git@github.com:owner/repo.git``
+    - ``https://TOKEN@github.com/owner/repo.git``  (git-config style)
+    """
+    s = url_or_slug.strip()
+
+    # SSH format: git@github.com:owner/repo.git
+    if s.startswith("git@"):
+        # git@github.com:owner/repo.git  →  owner/repo
+        colon_idx = s.find(":")
+        if colon_idx != -1:
+            path = s[colon_idx + 1:]
+            path = path.removesuffix(".git")
+            parts = path.split("/")
+            if len(parts) == 2 and all(parts):
+                return "/".join(parts)
+        return None
+
+    # HTTPS / plain slug
+    if "://" in s:
+        parsed = urlparse(s)
+        path = parsed.path.lstrip("/").removesuffix(".git")
+    else:
+        path = s.removesuffix(".git")
+
+    parts = path.split("/")
+    if len(parts) >= 2 and all(parts[:2]):
+        return f"{parts[0]}/{parts[1]}"
+
+    return None
+
+
+def extract_from_git_config_url(git_config_url: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Parse a git remote URL that may contain an embedded GitHub token and
+    return ``(token, owner/repo)``.
+
+    Supported URL forms found in ``.git/config``:
+    - ``https://ghp_TOKEN@github.com/owner/repo.git``
+    - ``https://oauth2:ghp_TOKEN@github.com/owner/repo.git``
+    - ``https://x-access-token:ghp_TOKEN@github.com/owner/repo.git``
+
+    Returns ``(None, None)`` if no token could be extracted.
+    """
+    try:
+        parsed = urlparse(git_config_url)
+    except Exception:
+        return None, None
+
+    # Token lives in the password field (oauth2:TOKEN) or username field (TOKEN@host)
+    token = parsed.password or parsed.username or None
+
+    # Derive repo fullname from the URL path
+    repo = parse_repo_fullname(git_config_url)
+
+    return token, repo
+
+
+# ------------------------------------------------------------------ #
 #  Banner                                                              #
 # ------------------------------------------------------------------ #
 
@@ -134,6 +206,25 @@ def parse_args() -> argparse.Namespace:
         "--token", "-t",
         required=False,
         help="GitHub Personal Access Token (disimpan otomatis setelah input pertama)",
+    )
+    parser.add_argument(
+        "--url", "-u",
+        required=False,
+        metavar="REPO_URL",
+        help=(
+            "Target a specific GitHub repository instead of running a broad search. "
+            "Accepts: 'owner/repo', 'https://github.com/owner/repo', or any GitHub repo URL."
+        ),
+    )
+    parser.add_argument(
+        "--git-config-url", "-g",
+        required=False,
+        metavar="GIT_REMOTE_URL",
+        help=(
+            "Git remote URL with an embedded access token (as found in .git/config). "
+            "Example: 'https://ghp_TOKEN@github.com/owner/repo.git'. "
+            "The token and target repo are extracted automatically from this URL."
+        ),
     )
     parser.add_argument(
         "--output", "-o",
@@ -180,8 +271,16 @@ def parse_args() -> argparse.Namespace:
 #  Async main scan logic                                               #
 # ------------------------------------------------------------------ #
 
-async def run_scan(args: argparse.Namespace, token: str) -> List[dict]:
-    """Main async scanning coroutine — returns all findings."""
+async def run_scan(
+    args: argparse.Namespace,
+    token: str,
+    target_repo: Optional[str] = None,
+) -> List[dict]:
+    """Main async scanning coroutine — returns all findings.
+
+    When *target_repo* is set (``owner/repo``), the broad repository/code search
+    is skipped and only that single repository is scanned.
+    """
     scanner = CredentialScanner()
     all_findings: List[dict] = []
 
@@ -191,16 +290,32 @@ async def run_scan(args: argparse.Namespace, token: str) -> List[dict]:
         concurrency=args.concurrency,
     ) as crawler:
 
-        # ── Step 1: Search ─────────────────────────────────────────── #
-        console.print(f"\n[bold cyan][1/3][/bold cyan] Searching GitHub for: [yellow]'{args.keyword}'[/yellow]...")
+        # ── Step 1: Search / resolve repos ────────────────────────── #
+        if target_repo:
+            console.print(
+                f"\n[bold cyan][1/3][/bold cyan] Resolving target repository: "
+                f"[yellow]'{target_repo}'[/yellow]..."
+            )
+            repo = await crawler.get_single_repo(target_repo)
+            if not repo:
+                console.print(
+                    f"[bold red][!][/bold red] Repository '{target_repo}' not found "
+                    f"or token lacks access."
+                )
+                return []
+            repos = [repo]
+            code_results: List[dict] = []
+            console.print(f"  → Scanning 1 repository: [bold]{repo['full_name']}[/bold]")
+        else:
+            console.print(f"\n[bold cyan][1/3][/bold cyan] Searching GitHub for: [yellow]'{args.keyword}'[/yellow]...")
 
-        repos, code_results = await asyncio.gather(
-            crawler.search_repositories(args.keyword),
-            crawler.search_code(args.keyword),
-        )
+            repos, code_results = await asyncio.gather(
+                crawler.search_repositories(args.keyword),
+                crawler.search_code(args.keyword),
+            )
 
-        console.print(f"  → Found [bold]{len(repos)}[/bold] repositories")
-        console.print(f"  → Found [bold]{len(code_results)}[/bold] code matches")
+            console.print(f"  → Found [bold]{len(repos)}[/bold] repositories")
+            console.print(f"  → Found [bold]{len(code_results)}[/bold] code matches")
 
         # ── Step 2: Crawl ──────────────────────────────────────────── #
         console.print(f"\n[bold cyan][2/3][/bold cyan] Crawling repositories...")
@@ -287,7 +402,51 @@ def main() -> None:
         handlers=[RichHandler(console=console, show_path=False)],
     )
 
+    # ── Resolve target repo and token from --git-config-url / --url ── #
+    target_repo: Optional[str] = None
+    git_config_token: Optional[str] = None
+    extracted_repo: Optional[str] = None
+
+    if args.git_config_url:
+        git_config_token, extracted_repo = extract_from_git_config_url(args.git_config_url)
+        if not git_config_token:
+            console.print(
+                "[bold red][!][/bold red] Tidak dapat mengekstrak token dari URL git-config. "
+                "Pastikan URL dalam format: https://TOKEN@github.com/owner/repo.git"
+            )
+            sys.exit(1)
+        console.print(
+            f"[green][*][/green] Token diekstrak dari git-config URL "
+            f"(panjang: {len(git_config_token)} karakter)"
+        )
+
+    if args.url:
+        # --url explicitly overrides any repo extracted from --git-config-url
+        parsed_repo = parse_repo_fullname(args.url)
+        if not parsed_repo:
+            console.print(
+                f"[bold red][!][/bold red] Tidak dapat mem-parsing repo dari URL: '{args.url}'. "
+                "Gunakan format: owner/repo atau https://github.com/owner/repo"
+            )
+            sys.exit(1)
+        target_repo = parsed_repo
+        console.print(f"[green][*][/green] Target repo: [yellow]{target_repo}[/yellow]")
+    elif extracted_repo:
+        # Fall back to repo derived from --git-config-url when --url is not set
+        target_repo = extracted_repo
+        console.print(f"[green][*][/green] Target repo diekstrak dari git-config URL: [yellow]{target_repo}[/yellow]")
+
+    # Token precedence: --token > --git-config-url token > saved/interactive
+    if args.token is not None:
+        token = resolve_token(args.token)
+    elif git_config_token is not None:
+        token = resolve_token(git_config_token)
+    else:
+        token = resolve_token(None)
+
     console.print(f"[*] Target keyword  : [yellow]{args.keyword}[/yellow]")
+    if target_repo:
+        console.print(f"[*] Target repo     : [yellow]{target_repo}[/yellow]")
     console.print(f"[*] Max repos       : {args.max_repos}")
     console.print(f"[*] Concurrency     : {args.concurrency}")
     console.print(f"[*] Deep scan       : {args.deep}")
@@ -295,10 +454,8 @@ def main() -> None:
     console.print(f"[*] Output dir      : {args.output_dir}")
     console.print("-" * 50)
 
-    token = resolve_token(args.token)
-
     # Run the async scan
-    all_findings = asyncio.run(run_scan(args, token))
+    all_findings = asyncio.run(run_scan(args, token, target_repo=target_repo))
 
     # ── Step 3: Report ─────────────────────────────────────────────── #
     console.print(f"\n[bold cyan][3/3][/bold cyan] Generating report...")

@@ -138,7 +138,7 @@ class Reporter:
   <table>
     <tr>
       <th>Severity</th><th>Type</th><th>Repository</th>
-      <th>File</th><th>Line</th><th>Value (redacted)</th><th>Entropy</th>
+      <th>File</th><th>Line</th><th>Value</th><th>Entropy</th>
     </tr>
     {rows_html}
   </table>

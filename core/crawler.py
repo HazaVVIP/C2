@@ -199,6 +199,15 @@ class GitHubCrawler:
     #  SEARCH                                                               #
     # ------------------------------------------------------------------ #
 
+    async def get_single_repo(self, full_name: str) -> Optional[Dict]:
+        """
+        Fetch metadata for a single repository by its ``owner/repo`` name.
+        Returns the repo dict on success, or *None* if the repo could not be
+        fetched (e.g. it does not exist or the token lacks access).
+        """
+        data = await self._get(f"{GITHUB_API}/repos/{full_name}")
+        return data if isinstance(data, dict) else None
+
     async def search_repositories(self, keyword: str) -> List[Dict]:
         """Search for repositories matching the keyword."""
         results: List[Dict] = []
