@@ -236,15 +236,33 @@ class GitHubCrawler:
 
         return results[: self.max_repos]
 
+    @staticmethod
+    def _quote_query(keyword: str) -> str:
+        """Return *keyword* wrapped in double-quotes for exact-phrase matching.
+
+        GitHub's code-search API can return 422 when a bare keyword contains
+        dots (e.g. ``nasa.gov``) because the parser treats the dot as a
+        special delimiter.  Quoting the term forces an exact-phrase search and
+        avoids the ambiguity that triggers the 422 response.
+
+        If the keyword is already fully quoted the original value is returned
+        unchanged.
+        """
+        stripped = keyword.strip()
+        if stripped.startswith('"') and stripped.endswith('"'):
+            return keyword
+        return f'"{stripped}"'
+
     async def search_code(self, keyword: str) -> List[Dict]:
         """Search GitHub code index for the keyword."""
         results: List[Dict] = []
         page = 1
+        query = self._quote_query(keyword)
 
         while len(results) < 100:
             data = await self._get(
                 f"{GITHUB_API}/search/code",
-                params={"q": keyword, "per_page": 30, "page": page},
+                params={"q": query, "per_page": 30, "page": page},
             )
 
             if not data or not data.get("items"):
@@ -269,7 +287,7 @@ class GitHubCrawler:
 
         data = await self._get(
             f"{GITHUB_API}/search/code",
-            params={"q": f"{keyword} fork:false", "per_page": 30},
+            params={"q": f"{self._quote_query(keyword)} fork:false", "per_page": 30},
         )
         if not data:
             return []
