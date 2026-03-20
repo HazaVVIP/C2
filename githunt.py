@@ -32,9 +32,6 @@ def load_saved_token(token_path: str = TOKEN_PATH) -> Optional[str]:
 def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
     try:
         token_dir = os.path.dirname(token_path)
-        if not token_dir:
-            print("[!] Direktori token tidak valid.", file=sys.stderr)
-            return
         if not os.path.isdir(token_dir):
             try:
                 os.makedirs(token_dir, exist_ok=True)
@@ -72,7 +69,7 @@ def resolve_token(passed_token: Optional[str]) -> str:
         sys.exit(1)
 
     try:
-        token = getpass.getpass("GitHub token (disimpan untuk pemakaian berikutnya): ").strip()
+        token = getpass.getpass("GitHub token (disimpan untuk penggunaan berikutnya): ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n[!] Input token dibatalkan.", file=sys.stderr)
         sys.exit(1)
