@@ -80,7 +80,9 @@ PATTERNS = [
     # ── Communication Services ────────────────────────────────────── #
     {
         "name": "Twilio Account SID",
-        "regex": re.compile(r"AC[a-zA-Z0-9]{32}"),
+        # Negative lookbehind prevents matching mid-base64 strings
+        # (e.g. sha512 npm integrity hashes that contain "AC" as a substring)
+        "regex": re.compile(r"(?<![A-Za-z0-9/+])(AC[a-zA-Z0-9]{32})(?![A-Za-z0-9/+=])"),
         "severity": "MEDIUM",
         "min_entropy": 3.5,
     },
@@ -422,7 +424,12 @@ PATTERNS = [
     # ── Infrastructure / DevOps ───────────────────────────────────── #
     {
         "name": "HashiCorp Vault Token",
-        "regex": re.compile(r"(?:hvs|s)\.[A-Za-z0-9]{24,}"),
+        # Negative lookahead (?![A-Za-z0-9.@]) prevents matching subdomain labels
+        # such as s.abcdefghijklmnopqrstuvwxyz.twitter.com that appear in bug-bounty
+        # scope / domain list files.  Every character inside a domain label is
+        # followed by another alphanumeric or dot, so regex backtracking can never
+        # produce a match — unlike (?!\.[A-Za-z0-9]) which only checks for a dot.
+        "regex": re.compile(r"(?<![A-Za-z0-9_])((?:hvs|s)\.[A-Za-z0-9]{24,})(?![A-Za-z0-9.@])"),
         "severity": "HIGH",
         "min_entropy": 3.5,
     },
@@ -459,8 +466,9 @@ PATTERNS = [
 
 # Lines to ignore (common false positives)
 IGNORE_PATTERNS = [
-    re.compile(r"(?i)example|placeholder|your[_-]?key|replace[_-]?me|xxx+|dummy"),
+    re.compile(r"(?i)example|placeholder|your[_-]?key|replace[_-]?me|xxx+|dummy|optional"),
     re.compile(r"(?i)<your|{{.*}}|\$\{.*\}|%s|%d|\*{4,}"),
+    re.compile(r'"integrity"\s*:'),  # npm/yarn package-lock integrity hashes
     re.compile(r"^\s*#"),   # Comment lines (handles leading whitespace)
     re.compile(r"^\s*//"),  # JS/Go/Java comment lines
     re.compile(r"^\s*\*"),  # Block comment lines

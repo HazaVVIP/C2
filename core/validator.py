@@ -80,6 +80,8 @@ class CredentialValidator:
                     status = await self._validate_sendgrid(value, session)
                 elif "gitlab" in cred_type:
                     status = await self._validate_gitlab(value, session)
+                elif "telegram bot" in cred_type:
+                    status = await self._validate_telegram(value, session)
                 else:
                     status = UNKNOWN
             except Exception as exc:
@@ -189,5 +191,30 @@ class CredentialValidator:
                     return RATE_LIMITED
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             logger.debug("GitLab validation error: %s", exc)
+            return ERROR
+        return UNKNOWN
+
+    async def _validate_telegram(
+        self, token: str, session: aiohttp.ClientSession
+    ) -> str:
+        """Call GET /bot<token>/getMe to verify the Telegram Bot Token."""
+        # Validate the token format (digits:alphanum-underscore-hyphen) before
+        # constructing the URL to prevent malformed or injected values.
+        import re as _re
+        if not _re.fullmatch(r"[0-9]{8,10}:[A-Za-z0-9_-]{35,}", token):
+            return INVALID
+        try:
+            async with session.get(
+                f"https://api.telegram.org/bot{token}/getMe",
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return VALID if data.get("ok") else INVALID
+                if resp.status == 401:
+                    return INVALID
+                if resp.status == 429:
+                    return RATE_LIMITED
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.debug("Telegram validation error: %s", exc)
             return ERROR
         return UNKNOWN
