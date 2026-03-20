@@ -5,6 +5,7 @@ Usage: python githunt.py --keyword "komdigi.go.id" --token YOUR_GITHUB_TOKEN
        python githunt.py --keyword "komdigi.go.id"  # token otomatis dipakai setelah disimpan
        python githunt.py --keyword "example" -u https://github.com/owner/repo
        python githunt.py --keyword "example" -g "https://ghp_TOKEN@github.com/owner/repo.git"
+       python githunt.py --keywords-file targets.txt --output sarif
 """
 
 import argparse
@@ -32,6 +33,7 @@ from rich.table import Table
 from core.crawler import GitHubCrawler
 from core.scanner import CredentialScanner
 from core.reporter import Reporter
+from core.validator import CredentialValidator
 
 TOKEN_PATH = os.path.join(os.path.expanduser("~"), ".githunt_token")
 console = Console()
@@ -172,6 +174,27 @@ def extract_from_git_config_url(git_config_url: str) -> Tuple[Optional[str], Opt
 
 
 # ------------------------------------------------------------------ #
+#  Keywords helpers                                                    #
+# ------------------------------------------------------------------ #
+
+def load_keywords_file(path: str) -> List[str]:
+    """
+    Read a plain-text file with one keyword per line.
+    Empty lines and lines starting with ``#`` are ignored.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            return [
+                line.strip()
+                for line in fh
+                if line.strip() and not line.strip().startswith("#")
+            ]
+    except OSError as exc:
+        console.print(f"[bold red][!] Gagal membaca keywords file '{path}': {exc}[/bold red]")
+        sys.exit(1)
+
+
+# ------------------------------------------------------------------ #
 #  Banner                                                              #
 # ------------------------------------------------------------------ #
 
@@ -190,6 +213,32 @@ def banner() -> None:
 
 
 # ------------------------------------------------------------------ #
+#  Live finding output                                                 #
+# ------------------------------------------------------------------ #
+
+_SEV_COLOR: dict = {"HIGH": "red", "MEDIUM": "yellow", "LOW": "blue"}
+
+
+def _print_finding_live(finding: dict) -> None:
+    """
+    Print a single finding immediately so results are never lost if the
+    program hangs mid-scan.  Only HIGH and MEDIUM findings are emitted to
+    avoid flooding the terminal with low-signal noise.
+    """
+    sev = finding["severity"]
+    if sev not in ("HIGH", "MEDIUM"):
+        return
+    color = _SEV_COLOR.get(sev, "white")
+    count = finding.get("count", 1)
+    count_str = f" [dim](×{count})[/dim]" if count > 1 else ""
+    console.print(
+        f"  ⚡ [{color}]{sev}[/{color}] {finding['type']}{count_str} | "
+        f"[dim]{finding['repo']}[/dim] @ "
+        f"[cyan]{finding['filename']}:{finding['line_number']}[/cyan]"
+    )
+
+
+# ------------------------------------------------------------------ #
 #  CLI                                                                 #
 # ------------------------------------------------------------------ #
 
@@ -197,11 +246,22 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="GitHunt - Crawl GitHub for exposed credentials"
     )
-    parser.add_argument(
+
+    kw_group = parser.add_mutually_exclusive_group(required=True)
+    kw_group.add_argument(
         "--keyword", "-k",
-        required=True,
         help="Keyword to search (e.g. 'komdigi.go.id', 'mycompany.com')",
     )
+    kw_group.add_argument(
+        "--keywords-file",
+        metavar="FILE",
+        help=(
+            "Path to a plain-text file with one keyword per line. "
+            "Empty lines and lines starting with '#' are ignored. "
+            "Cannot be combined with --keyword."
+        ),
+    )
+
     parser.add_argument(
         "--token", "-t",
         required=False,
@@ -229,7 +289,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output", "-o",
         default="json",
-        choices=["json", "csv", "html"],
+        choices=["json", "csv", "html", "sarif", "markdown"],
         help="Output format (default: json)",
     )
     parser.add_argument(
@@ -252,7 +312,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--deep",
         action="store_true",
-        help="Enable deep scan (includes commit history)",
+        help=(
+            "Enable deep scan mode: includes commit history scanning, "
+            "public Gist search, and all other available techniques. "
+            "Recommended for thorough bug-hunting runs."
+        ),
     )
     parser.add_argument(
         "--validate",
@@ -274,6 +338,7 @@ def parse_args() -> argparse.Namespace:
 async def run_scan(
     args: argparse.Namespace,
     token: str,
+    keyword: str,
     target_repo: Optional[str] = None,
 ) -> List[dict]:
     """Main async scanning coroutine — returns all findings.
@@ -307,15 +372,24 @@ async def run_scan(
             code_results: List[dict] = []
             console.print(f"  → Scanning 1 repository: [bold]{repo['full_name']}[/bold]")
         else:
-            console.print(f"\n[bold cyan][1/3][/bold cyan] Searching GitHub for: [yellow]'{args.keyword}'[/yellow]...")
+            console.print(f"\n[bold cyan][1/3][/bold cyan] Searching GitHub for: [yellow]'{keyword}'[/yellow]...")
 
-            repos, code_results = await asyncio.gather(
-                crawler.search_repositories(args.keyword),
-                crawler.search_code(args.keyword),
-            )
+            search_tasks = [
+                crawler.search_repositories(keyword),
+                crawler.search_code(keyword),
+            ]
+            if args.deep:
+                search_tasks.append(crawler.search_gists(keyword))
+
+            search_results = await asyncio.gather(*search_tasks)
+            repos = search_results[0]
+            code_results = search_results[1]
+            gist_results: List[dict] = search_results[2] if args.deep else []
 
             console.print(f"  → Found [bold]{len(repos)}[/bold] repositories")
             console.print(f"  → Found [bold]{len(code_results)}[/bold] code matches")
+            if args.deep:
+                console.print(f"  → Found [bold]{len(gist_results)}[/bold] gist matches")
 
         # ── Step 2: Crawl ──────────────────────────────────────────── #
         console.print(f"\n[bold cyan][2/3][/bold cyan] Crawling repositories...")
@@ -348,6 +422,8 @@ async def run_scan(
                                 repo=repo["full_name"],
                                 filename=file_info["path"],
                             )
+                            for f in findings:
+                                _print_finding_live(f)
                             all_findings.extend(findings)
 
                 # Deep scan: commit history
@@ -366,6 +442,8 @@ async def run_scan(
                             repo=repo["full_name"],
                             filename=f"[commit] {commit['sha'][:8]}",
                         )
+                        for f in findings:
+                            _print_finding_live(f)
                         all_findings.extend(findings)
 
                 progress.advance(repo_task)
@@ -381,7 +459,34 @@ async def run_scan(
                         repo=result.get("repository", {}).get("full_name", "unknown"),
                         filename=result.get("path", "unknown"),
                     )
+                    for f in findings:
+                        _print_finding_live(f)
                     all_findings.extend(findings)
+
+        # Scan gist results (deep mode)
+        if args.deep and gist_results:
+            gist_contents = await crawler.get_files_content_batch(gist_results)
+            for result, content in zip(gist_results, gist_contents):
+                if content:
+                    findings = scanner.scan(
+                        content=content,
+                        source=result.get("html_url", ""),
+                        repo=result.get("repository", {}).get("full_name", "gist"),
+                        filename=result.get("path", "unknown"),
+                    )
+                    for f in findings:
+                        _print_finding_live(f)
+                    all_findings.extend(findings)
+
+    # ── Optional: Validate credentials ────────────────────────────── #
+    if args.validate and all_findings:
+        console.print(f"\n[bold cyan][2.5/3][/bold cyan] Validating {len(all_findings)} findings...")
+        validator = CredentialValidator()
+        await validator.validate_findings(all_findings)
+        valid_count = sum(
+            1 for f in all_findings if f.get("validation_status") == "VALID"
+        )
+        console.print(f"  → [bold green]{valid_count}[/bold green] credentials confirmed VALID")
 
     return all_findings
 
@@ -401,6 +506,16 @@ def main() -> None:
         format="%(message)s",
         handlers=[RichHandler(console=console, show_path=False)],
     )
+
+    # ── Resolve keywords ──────────────────────────────────────────── #
+    if args.keywords_file:
+        keywords = load_keywords_file(args.keywords_file)
+        if not keywords:
+            console.print("[bold red][!] keywords-file is empty.[/bold red]")
+            sys.exit(1)
+        console.print(f"[green][*][/green] Loaded [bold]{len(keywords)}[/bold] keywords from '{args.keywords_file}'")
+    else:
+        keywords = [args.keyword]
 
     # ── Resolve target repo and token from --git-config-url / --url ── #
     target_repo: Optional[str] = None
@@ -444,18 +559,26 @@ def main() -> None:
     else:
         token = resolve_token(None)
 
-    console.print(f"[*] Target keyword  : [yellow]{args.keyword}[/yellow]")
+    console.print(f"[*] Keywords        : [yellow]{', '.join(keywords)}[/yellow]")
     if target_repo:
         console.print(f"[*] Target repo     : [yellow]{target_repo}[/yellow]")
     console.print(f"[*] Max repos       : {args.max_repos}")
     console.print(f"[*] Concurrency     : {args.concurrency}")
     console.print(f"[*] Deep scan       : {args.deep}")
     console.print(f"[*] Validate creds  : {args.validate}")
+    console.print(f"[*] Output format   : {args.output}")
     console.print(f"[*] Output dir      : {args.output_dir}")
     console.print("-" * 50)
 
-    # Run the async scan
-    all_findings = asyncio.run(run_scan(args, token, target_repo=target_repo))
+    # Run scans — one per keyword, accumulate all findings
+    all_findings: List[dict] = []
+    for keyword in keywords:
+        if len(keywords) > 1:
+            console.print(f"\n[bold magenta]▶ Keyword: '{keyword}'[/bold magenta]")
+        keyword_findings = asyncio.run(
+            run_scan(args, token, keyword=keyword, target_repo=target_repo)
+        )
+        all_findings.extend(keyword_findings)
 
     # ── Step 3: Report ─────────────────────────────────────────────── #
     console.print(f"\n[bold cyan][3/3][/bold cyan] Generating report...")
@@ -467,16 +590,30 @@ def main() -> None:
     summary = Table(show_header=True, header_style="bold magenta")
     summary.add_column("Severity", style="bold")
     summary.add_column("Count", justify="right")
-    summary.add_row("[red]HIGH[/red]",   str(len(high)))
-    summary.add_row("[yellow]MEDIUM[/yellow]", str(len(medium)))
-    summary.add_row("[blue]LOW[/blue]",  str(len(low)))
-    summary.add_row("TOTAL", str(len(all_findings)))
+    if args.validate:
+        summary.add_column("Validated VALID", justify="right")
+        high_valid   = sum(1 for f in high   if f.get("validation_status") == "VALID")
+        medium_valid = sum(1 for f in medium if f.get("validation_status") == "VALID")
+        low_valid    = sum(1 for f in low    if f.get("validation_status") == "VALID")
+        summary.add_row("[red]HIGH[/red]",        str(len(high)),   str(high_valid))
+        summary.add_row("[yellow]MEDIUM[/yellow]", str(len(medium)), str(medium_valid))
+        summary.add_row("[blue]LOW[/blue]",        str(len(low)),    str(low_valid))
+        summary.add_row("TOTAL",                   str(len(all_findings)),
+                        str(high_valid + medium_valid + low_valid))
+    else:
+        summary.add_row("[red]HIGH[/red]",   str(len(high)))
+        summary.add_row("[yellow]MEDIUM[/yellow]", str(len(medium)))
+        summary.add_row("[blue]LOW[/blue]",  str(len(low)))
+        summary.add_row("TOTAL", str(len(all_findings)))
     console.print(summary)
 
+    # Use a stable label for the report filename (first keyword or "multi_N")
+    report_label = keywords[0] if len(keywords) == 1 else f"multi_{len(keywords)}_keywords"
     reporter = Reporter(output_format=args.output, output_dir=args.output_dir)
-    output_file = reporter.save(all_findings, keyword=args.keyword)
+    output_file = reporter.save(all_findings, keyword=report_label)
     console.print(f"\n[bold green][✓][/bold green] Report saved to: [underline]{output_file}[/underline]")
 
 
 if __name__ == "__main__":
     main()
+
