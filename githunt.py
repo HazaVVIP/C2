@@ -25,18 +25,21 @@ def load_saved_token(token_path: str = TOKEN_PATH) -> Optional[str]:
     except FileNotFoundError:
         return None
     except OSError as exc:
-        print(f"[!] Gagal membaca token tersimpan: {exc}", file=sys.stderr)
+        print("[!] Gagal membaca token tersimpan.", file=sys.stderr)
         return None
 
 
 def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
     try:
         token_dir = os.path.dirname(token_path)
+        if not token_dir:
+            print("[!] Direktori token tidak valid.", file=sys.stderr)
+            return
         if not os.path.isdir(token_dir):
             try:
                 os.makedirs(token_dir, exist_ok=True)
             except OSError as exc:
-                print(f"[!] Gagal membuat direktori token: {exc}", file=sys.stderr)
+                print("[!] Gagal membuat direktori token.", file=sys.stderr)
                 return
         if not os.access(token_dir, os.W_OK):
             print(f"[!] Tidak ada izin menulis token di: {token_dir}", file=sys.stderr)
@@ -47,10 +50,11 @@ def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
         try:
             os.chmod(token_path, 0o600)
         except OSError:
-            print("[!] Tidak bisa mengatur permission file token.", file=sys.stderr)
+            print("[!] Peringatan: Tidak bisa mengatur permission file token.", file=sys.stderr)
+            print("[!] File token mungkin dapat dibaca oleh pengguna lain.", file=sys.stderr)
         print(f"[*] Token disimpan di {token_path}")
     except OSError as exc:
-        print(f"[!] Gagal menyimpan token: {exc}", file=sys.stderr)
+        print("[!] Gagal menyimpan token.", file=sys.stderr)
 
 
 def resolve_token(passed_token: Optional[str]) -> str:
