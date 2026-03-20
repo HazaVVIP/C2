@@ -6,6 +6,7 @@ Usage: python githunt.py --keyword "komdigi.go.id" --token YOUR_GITHUB_TOKEN
 """
 
 import argparse
+import errno
 import getpass
 import os
 import sys
@@ -24,21 +25,19 @@ def load_saved_token(token_path: str = TOKEN_PATH) -> Optional[str]:
             return token or None
     except FileNotFoundError:
         return None
-    except OSError:
-        print("[!] Gagal membaca token tersimpan. Periksa izin atau isi file.", file=sys.stderr)
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EPERM}:
+            message = "Tidak punya izin untuk membaca token tersimpan."
+        elif exc.errno == errno.EIO:
+            message = "Terjadi kesalahan I/O saat membaca token tersimpan."
+        else:
+            message = "Terjadi kesalahan saat membaca token tersimpan."
+        print(f"[!] {message}", file=sys.stderr)
         return None
 
 
 def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
     try:
-        token_dir = os.path.dirname(token_path)
-        if not os.path.isdir(token_dir):
-            try:
-                os.makedirs(token_dir, exist_ok=True)
-            except OSError:
-                print("[!] Gagal membuat direktori token.", file=sys.stderr)
-                return
-
         with open(token_path, "w") as handle:
             handle.write(token.strip())
         try:
@@ -67,7 +66,7 @@ def resolve_token(passed_token: Optional[str]) -> str:
         sys.exit(1)
 
     try:
-        token = getpass.getpass(f"GitHub token (disimpan di {TOKEN_PATH}): ").strip()
+        token = getpass.getpass("GitHub token (akan disimpan secara lokal): ").strip()
     except (EOFError, KeyboardInterrupt):
         print("\n[!] Input token dibatalkan.", file=sys.stderr)
         sys.exit(1)
