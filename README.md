@@ -2,6 +2,8 @@
 
 Tools untuk **authorized security research** — menelusuri GitHub dan mendeteksi kredensial yang tidak sengaja ter-expose.
 
+> 📖 **Panduan lengkap, rekomendasi dork, dan tips penggunaan ada di [USAGE.md](USAGE.md).**
+
 ## Cara Pakai
 
 ```bash
