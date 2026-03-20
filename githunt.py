@@ -300,8 +300,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-repos",
         type=int,
-        default=50,
-        help="Max repositories to crawl (default: 50)",
+        default=109,
+        help="Max repositories to crawl (default: 109)",
+    )
+    parser.add_argument(
+        "--max-code",
+        type=int,
+        default=109,
+        help="Max code search results to process (default: 109)",
     )
     parser.add_argument(
         "--concurrency",
@@ -352,6 +358,7 @@ async def run_scan(
     async with GitHubCrawler(
         token=token,
         max_repos=args.max_repos,
+        max_code=args.max_code,
         concurrency=args.concurrency,
     ) as crawler:
 
@@ -577,6 +584,7 @@ def main() -> None:
     if target_repo:
         console.print(f"[*] Target repo     : [yellow]{target_repo}[/yellow]")
     console.print(f"[*] Max repos       : {args.max_repos}")
+    console.print(f"[*] Max code        : {args.max_code}")
     console.print(f"[*] Concurrency     : {args.concurrency}")
     console.print(f"[*] Deep scan       : {args.deep}")
     console.print(f"[*] Validate creds  : {args.validate}")

@@ -58,11 +58,13 @@ class GitHubCrawler:
     def __init__(
         self,
         token: str,
-        max_repos: int = 50,
+        max_repos: int = 109,
+        max_code: int = 109,
         concurrency: int = 10,
     ) -> None:
         self.token = token
         self.max_repos = max_repos
+        self.max_code = max_code
         self.concurrency = concurrency
         self._session: Optional[aiohttp.ClientSession] = None
         # Semaphore created lazily in __aenter__ / _ensure_session
@@ -259,7 +261,7 @@ class GitHubCrawler:
         page = 1
         query = self._quote_query(keyword)
 
-        while len(results) < 100:
+        while len(results) < self.max_code:
             data = await self._get(
                 f"{GITHUB_API}/search/code",
                 params={"q": query, "per_page": 30, "page": page},
@@ -276,7 +278,7 @@ class GitHubCrawler:
 
             await asyncio.sleep(1)  # extra throttle for code search
 
-        return results
+        return results[: self.max_code]
 
     async def search_gists(self, keyword: str) -> List[Dict]:
         """
@@ -287,7 +289,7 @@ class GitHubCrawler:
 
         data = await self._get(
             f"{GITHUB_API}/search/code",
-            params={"q": f"{self._quote_query(keyword)} fork:false", "per_page": 30},
+            params={"q": self._quote_query(keyword), "per_page": 30},
         )
         if not data:
             return []
