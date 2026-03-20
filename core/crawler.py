@@ -1,13 +1,18 @@
 """
 core/crawler.py
-Handles all GitHub API interactions: search, crawl, fetch content.
+Handles all GitHub API interactions using aiohttp + asyncio.
+All public methods are coroutines; call them inside an asyncio event loop.
 """
 
-import time
+import asyncio
 import base64
-import requests
-from typing import List, Dict, Optional
+import logging
+import time
+from typing import Dict, List, Optional
 
+import aiohttp
+
+logger = logging.getLogger(__name__)
 
 GITHUB_API = "https://api.github.com"
 
@@ -29,66 +34,187 @@ SKIP_FILES = {
     "Gemfile.lock", "go.sum",
 }
 
+# Directories unlikely to contain credentials
+SKIP_DIRS = {
+    "node_modules", ".git", "vendor", "dist", "build",
+    "__pycache__", ".pytest_cache", "coverage", "docs",
+    "test", "tests", "spec", "fixtures", "examples",
+}
+
 
 class GitHubCrawler:
-    def __init__(self, token: str, max_repos: int = 50):
+    """
+    Async GitHub crawler built on aiohttp.
+
+    Usage (inside an async context)::
+
+        async with GitHubCrawler(token="ghp_...") as crawler:
+            repos = await crawler.search_repositories("komdigi.go.id")
+            ...
+
+    Or use the module-level helper :func:`run_crawler` for one-shot usage.
+    """
+
+    def __init__(
+        self,
+        token: str,
+        max_repos: int = 50,
+        concurrency: int = 10,
+    ) -> None:
         self.token = token
         self.max_repos = max_repos
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"token {token}",
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "GitHunt-Security-Research/1.0",
-        })
-        self._request_count = 0
+        self.concurrency = concurrency
+        self._session: Optional[aiohttp.ClientSession] = None
+        # Semaphore created lazily in __aenter__ / _ensure_session
+        self._sem: Optional[asyncio.Semaphore] = None
 
-    def _get(self, url: str, params: dict = None) -> Optional[dict]:
-        """Make a rate-limit-aware GET request."""
-        self._request_count += 1
+    # ------------------------------------------------------------------ #
+    #  Context-manager helpers                                              #
+    # ------------------------------------------------------------------ #
 
-        # Throttle: GitHub Search API allows 30 req/min (authenticated)
-        if self._request_count % 25 == 0:
-            print("  [!] Rate limit pause (2s)...")
-            time.sleep(2)
+    async def __aenter__(self) -> "GitHubCrawler":
+        await self._ensure_session()
+        return self
 
-        try:
-            resp = self.session.get(url, params=params, timeout=15)
+    async def __aexit__(self, *_) -> None:
+        await self.close()
 
-            if resp.status_code == 403:
-                reset_time = int(resp.headers.get("X-RateLimit-Reset", time.time() + 60))
-                wait = max(reset_time - int(time.time()), 5)
-                print(f"  [!] Rate limited. Waiting {wait}s...")
-                time.sleep(wait)
-                resp = self.session.get(url, params=params, timeout=15)
+    async def _ensure_session(self) -> None:
+        """Create the aiohttp session and semaphore if they don't exist yet."""
+        if self._session is None or self._session.closed:
+            timeout = aiohttp.ClientTimeout(total=40, connect=10)
+            connector = aiohttp.TCPConnector(limit=self.concurrency, ssl=True)
+            self._session = aiohttp.ClientSession(
+                headers={
+                    "Authorization": f"token {self.token}",
+                    "Accept": "application/vnd.github.v3+json",
+                    "User-Agent": "GitHunt-Security-Research/1.0",
+                },
+                timeout=timeout,
+                connector=connector,
+            )
+        if self._sem is None:
+            self._sem = asyncio.Semaphore(self.concurrency)
 
-            if resp.status_code == 200:
-                return resp.json()
-            elif resp.status_code == 404:
-                return None
-            else:
-                return None
+    async def close(self) -> None:
+        """Close the underlying aiohttp session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
 
-        except requests.RequestException as e:
-            print(f"  [!] Request error: {e}")
-            return None
+    # ------------------------------------------------------------------ #
+    #  Internal GET                                                         #
+    # ------------------------------------------------------------------ #
+
+    async def _get(
+        self,
+        url: str,
+        params: Optional[dict] = None,
+        accept: Optional[str] = None,
+    ) -> Optional[dict]:
+        """Rate-limit-aware async GET; returns parsed JSON or None."""
+        await self._ensure_session()
+        assert self._session is not None
+        assert self._sem is not None
+
+        headers: dict = {}
+        if accept:
+            headers["Accept"] = accept
+
+        async with self._sem:
+            for attempt in range(3):
+                try:
+                    async with self._session.get(
+                        url, params=params, headers=headers
+                    ) as resp:
+                        # Proactive rate-limit check
+                        remaining = int(resp.headers.get("X-RateLimit-Remaining", 999))
+                        if remaining <= 2:
+                            reset_ts = int(
+                                resp.headers.get("X-RateLimit-Reset", time.time() + 60)
+                            )
+                            wait = max(reset_ts - int(time.time()), 5)
+                            logger.warning(
+                                "Rate limit nearly exhausted — waiting %ds...", wait
+                            )
+                            await asyncio.sleep(wait)
+
+                        if resp.status == 403:
+                            reset_ts = int(
+                                resp.headers.get("X-RateLimit-Reset", time.time() + 60)
+                            )
+                            wait = max(reset_ts - int(time.time()), 5)
+                            logger.warning("Rate limited (403) — waiting %ds...", wait)
+                            await asyncio.sleep(wait)
+                            continue  # retry
+
+                        if resp.status == 401:
+                            logger.error(
+                                "Authentication failed (401). Check your GitHub token."
+                            )
+                            return None
+
+                        if resp.status == 422:
+                            logger.warning(
+                                "Unprocessable entity (422) for %s — query may be invalid.",
+                                url,
+                            )
+                            return None
+
+                        if resp.status == 200:
+                            return await resp.json()
+
+                        logger.debug(
+                            "Non-200 response %d for %s", resp.status, url
+                        )
+                        return None
+
+                except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    logger.warning(
+                        "Request error for %s (attempt %d/3): %s", url, attempt + 1, exc
+                    )
+                    if attempt < 2:
+                        await asyncio.sleep(2 ** attempt)
+
+        return None
+
+    async def _get_text(self, url: str, accept: str) -> Optional[str]:
+        """GET a URL and return the raw text body (for diffs)."""
+        await self._ensure_session()
+        assert self._session is not None
+        assert self._sem is not None
+
+        async with self._sem:
+            try:
+                async with self._session.get(
+                    url, headers={"Accept": accept}
+                ) as resp:
+                    if resp.status == 200:
+                        return await resp.text()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                logger.warning("Error fetching text from %s: %s", url, exc)
+
+        return None
 
     # ------------------------------------------------------------------ #
     #  SEARCH                                                               #
     # ------------------------------------------------------------------ #
 
-    def search_repositories(self, keyword: str) -> List[Dict]:
+    async def search_repositories(self, keyword: str) -> List[Dict]:
         """Search for repositories matching the keyword."""
-        results = []
+        results: List[Dict] = []
         page = 1
 
         while len(results) < self.max_repos:
-            data = self._get(f"{GITHUB_API}/search/repositories", params={
-                "q": keyword,
-                "sort": "updated",
-                "order": "desc",
-                "per_page": 30,
-                "page": page,
-            })
+            data = await self._get(
+                f"{GITHUB_API}/search/repositories",
+                params={
+                    "q": keyword,
+                    "sort": "updated",
+                    "order": "desc",
+                    "per_page": 30,
+                    "page": page,
+                },
+            )
 
             if not data or not data.get("items"):
                 break
@@ -99,22 +225,18 @@ class GitHubCrawler:
             if len(data["items"]) < 30:
                 break
 
-        return results[:self.max_repos]
+        return results[: self.max_repos]
 
-    def search_code(self, keyword: str) -> List[Dict]:
-        """
-        Search GitHub code index for the keyword.
-        This catches files that mention the keyword directly.
-        """
-        results = []
+    async def search_code(self, keyword: str) -> List[Dict]:
+        """Search GitHub code index for the keyword."""
+        results: List[Dict] = []
         page = 1
 
         while len(results) < 100:
-            data = self._get(f"{GITHUB_API}/search/code", params={
-                "q": keyword,
-                "per_page": 30,
-                "page": page,
-            })
+            data = await self._get(
+                f"{GITHUB_API}/search/code",
+                params={"q": keyword, "per_page": 30, "page": page},
+            )
 
             if not data or not data.get("items"):
                 break
@@ -125,77 +247,110 @@ class GitHubCrawler:
             if len(data["items"]) < 30 or page > 3:
                 break
 
-            time.sleep(1)  # Extra throttle for code search
+            await asyncio.sleep(1)  # extra throttle for code search
 
         return results
 
-    def search_gists(self, keyword: str) -> List[Dict]:
-        """Search public gists for the keyword."""
-        data = self._get(f"{GITHUB_API}/gists/public", params={
-            "per_page": 30
-        })
-        # Gist search requires full-text search workaround
-        # Return empty for now — can be extended with scraping
-        return []
+    async def search_gists(self, keyword: str) -> List[Dict]:
+        """
+        Search public gists for the keyword via the code-search API.
+        Returns file metadata dicts (same shape as code search items).
+        """
+        from urllib.parse import urlparse
+
+        data = await self._get(
+            f"{GITHUB_API}/search/code",
+            params={"q": f"{keyword} fork:false", "per_page": 30},
+        )
+        if not data:
+            return []
+
+        gist_results = []
+        for item in data.get("items", []):
+            html_url = item.get("html_url", "")
+            try:
+                host = urlparse(html_url).hostname or ""
+            except Exception:
+                host = ""
+            if host == "gist.github.com" or host.endswith(".gist.github.com"):
+                gist_results.append(item)
+        return gist_results
 
     # ------------------------------------------------------------------ #
     #  CRAWL                                                                #
     # ------------------------------------------------------------------ #
 
-    def get_repo_files(self, repo: Dict, path: str = "") -> List[Dict]:
+    async def get_repo_files(
+        self, repo: Dict, path: str = ""
+    ) -> List[Dict]:
         """
-        Recursively get all interesting files in a repository.
-        Returns a flat list of file metadata dicts.
+        Recursively collect all interesting files in a repository.
+        Returns a flat list of file-metadata dicts.
         """
-        interesting_files = []
-
-        data = self._get(
+        data = await self._get(
             f"{GITHUB_API}/repos/{repo['full_name']}/contents/{path}"
         )
 
         if not data or not isinstance(data, list):
             return []
 
+        interesting: List[Dict] = []
+        sub_tasks = []
+
         for item in data:
             if item["type"] == "file":
                 filename = item["name"]
-                ext = "." + filename.rsplit(".", 1)[-1] if "." in filename else filename
-
+                ext = (
+                    "." + filename.rsplit(".", 1)[-1] if "." in filename else filename
+                )
                 if filename in SKIP_FILES:
                     continue
-
-                if (ext in INTERESTING_EXTENSIONS or
-                        filename in INTERESTING_EXTENSIONS or
-                        self._is_interesting_name(filename)):
-                    interesting_files.append(item)
+                if (
+                    ext in INTERESTING_EXTENSIONS
+                    or filename in INTERESTING_EXTENSIONS
+                    or self._is_interesting_name(filename)
+                ):
+                    interesting.append(item)
 
             elif item["type"] == "dir":
-                # Recurse into directories (limit depth via naming heuristics)
                 if not self._should_skip_dir(item["name"]):
-                    sub_files = self.get_repo_files(repo, item["path"])
-                    interesting_files.extend(sub_files)
+                    sub_tasks.append(self.get_repo_files(repo, item["path"]))
 
-        return interesting_files
+        # Recurse into sub-directories concurrently
+        if sub_tasks:
+            sub_results = await asyncio.gather(*sub_tasks, return_exceptions=True)
+            for result in sub_results:
+                if isinstance(result, list):
+                    interesting.extend(result)
+                elif isinstance(result, Exception):
+                    logger.debug("Error recursing into sub-dir: %s", result)
 
-    def get_file_content(self, file_info: Dict) -> Optional[str]:
+        return interesting
+
+    async def get_file_content(self, file_info: Dict) -> Optional[str]:
         """Fetch and decode the content of a single file."""
-        # If file_info already has content (from code search)
+        # Inline content already present (code-search results)
         if file_info.get("content"):
             try:
-                return base64.b64decode(file_info["content"]).decode("utf-8", errors="ignore")
+                return base64.b64decode(file_info["content"]).decode(
+                    "utf-8", errors="ignore"
+                )
             except Exception:
                 pass
 
-        # Fetch via API url
         url = file_info.get("url") or file_info.get("git_url")
         if not url:
             return None
 
-        # Skip large files (>500KB)
         if file_info.get("size", 0) > 500_000:
+            logger.debug(
+                "Skipping large file %s (%d bytes)",
+                file_info.get("path"),
+                file_info.get("size", 0),
+            )
             return None
 
-        data = self._get(url)
+        data = await self._get(url)
         if not data:
             return None
 
@@ -210,54 +365,56 @@ class GitHubCrawler:
 
         return content or None
 
+    async def get_files_content_batch(
+        self, files: List[Dict]
+    ) -> List[Optional[str]]:
+        """
+        Fetch all file contents concurrently via asyncio.gather.
+        Returns a list aligned with *files*; failed fetches produce None.
+        """
+        raw = await asyncio.gather(
+            *[self.get_file_content(f) for f in files],
+            return_exceptions=True,
+        )
+        results: List[Optional[str]] = []
+        for item in raw:
+            if isinstance(item, BaseException):
+                logger.debug("File fetch error (suppressed): %s", item)
+                results.append(None)
+            else:
+                results.append(item)
+        return results
+
     # ------------------------------------------------------------------ #
     #  COMMIT HISTORY (deep scan)                                           #
     # ------------------------------------------------------------------ #
 
-    def get_commit_history(self, repo: Dict, max_commits: int = 50) -> List[Dict]:
+    async def get_commit_history(
+        self, repo: Dict, max_commits: int = 50
+    ) -> List[Dict]:
         """Get recent commits for a repository."""
-        data = self._get(
+        data = await self._get(
             f"{GITHUB_API}/repos/{repo['full_name']}/commits",
-            params={"per_page": max_commits}
+            params={"per_page": max_commits},
         )
         return data if isinstance(data, list) else []
 
-    def get_commit_diff(self, repo: Dict, sha: str) -> Optional[str]:
-        """Get the diff/patch of a single commit."""
+    async def get_commit_diff(self, repo: Dict, sha: str) -> Optional[str]:
+        """Get the unified diff of a single commit."""
         url = f"{GITHUB_API}/repos/{repo['full_name']}/commits/{sha}"
-
-        try:
-            resp = self.session.get(
-                url,
-                headers={**self.session.headers, "Accept": "application/vnd.github.v3.diff"},
-                timeout=15,
-            )
-            if resp.status_code == 200:
-                return resp.text
-        except requests.RequestException:
-            pass
-
-        return None
+        return await self._get_text(url, accept="application/vnd.github.v3.diff")
 
     # ------------------------------------------------------------------ #
     #  HELPERS                                                              #
     # ------------------------------------------------------------------ #
 
     def _is_interesting_name(self, name: str) -> bool:
-        """Check if filename is interesting based on name patterns."""
         interesting_patterns = [
             "secret", "credential", "password", "passwd", "token",
             "apikey", "api_key", "api-key", "auth", "private",
             "config", "setting", "database", "db", "connection",
         ]
-        name_lower = name.lower()
-        return any(p in name_lower for p in interesting_patterns)
+        return any(p in name.lower() for p in interesting_patterns)
 
     def _should_skip_dir(self, dirname: str) -> bool:
-        """Skip directories that are unlikely to contain credentials."""
-        skip_dirs = {
-            "node_modules", ".git", "vendor", "dist", "build",
-            "__pycache__", ".pytest_cache", "coverage", "docs",
-            "test", "tests", "spec", "fixtures", "examples",
-        }
-        return dirname.lower() in skip_dirs
+        return dirname.lower() in SKIP_DIRS
