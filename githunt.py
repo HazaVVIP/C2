@@ -33,8 +33,11 @@ def save_token(token: str, token_path: str = TOKEN_PATH) -> None:
     try:
         token_dir = os.path.dirname(token_path) or "."
         if not os.path.isdir(token_dir):
-            print(f"[!] Direktori token tidak ditemukan: {token_dir}", file=sys.stderr)
-            return
+            try:
+                os.makedirs(token_dir, exist_ok=True)
+            except OSError as exc:
+                print(f"[!] Direktori token tidak ditemukan: {exc}", file=sys.stderr)
+                return
         if not os.access(token_dir, os.W_OK):
             print(f"[!] Tidak ada izin menulis token di: {token_dir}", file=sys.stderr)
             return
