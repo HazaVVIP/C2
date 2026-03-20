@@ -130,13 +130,6 @@ PATTERNS = [
         "severity": "HIGH",
         "min_entropy": 3.0,
     },
-    {
-        "name": "Telegram Bot Token",
-        "regex": re.compile(r"[0-9]{8,10}:[A-Za-z0-9_-]{35,}"),
-        "severity": "HIGH",
-        "min_entropy": 3.5,
-    },
-
     # ── Version Control & CI/CD ───────────────────────────────────── #
     {
         "name": "GitHub Personal Access Token",
@@ -408,7 +401,21 @@ PATTERNS = [
     # ── Identity & Access Management ──────────────────────────────── #
     {
         "name": "Okta API Token",
-        "regex": re.compile(r"00[A-Za-z0-9_-]{40}"),
+        # Real Okta API tokens: "00" + exactly 40 alphanumeric chars.
+        # Word-boundary anchors prevent matching:
+        #   • UUID segments  (contain hyphens, so excluded by [A-Za-z0-9])
+        #   • URL slugs      (same reason)
+        #   • Base64 strings (the preceding/following char is still alphanumeric)
+        # Context check (SSWS prefix or assignment keyword) further reduces noise.
+        "regex": re.compile(
+            r"(?i)"
+            r"(?:"
+            r"SSWS\s+"                                          # Authorization: SSWS <token>
+            r"|(?:okta[_\-]?(?:api[_\-]?)?token|api[_\-]?token)\s*[:=]\s*['\"]?"  # config assignment
+            r")"
+            r"(00[A-Za-z0-9]{40})"
+            r"(?![A-Za-z0-9])"
+        ),
         "severity": "HIGH",
         "min_entropy": 4.0,
     },
@@ -461,6 +468,117 @@ PATTERNS = [
         ),
         "severity": "HIGH",
         "min_entropy": 3.5,
+    },
+
+    # ── WordPress ─────────────────────────────────────────────────── #
+    {
+        "name": "WordPress DB Password",
+        "regex": re.compile(
+            r"define\s*\(\s*['\"]DB_PASSWORD['\"]\s*,\s*['\"]([^'\"]{6,})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 2.5,
+    },
+    {
+        "name": "WordPress DB User",
+        "regex": re.compile(
+            r"define\s*\(\s*['\"]DB_USER['\"]\s*,\s*['\"]([^'\"]{3,})['\"]"
+        ),
+        "severity": "MEDIUM",
+        "min_entropy": 0,
+    },
+    {
+        "name": "WordPress Auth Key / Salt",
+        "regex": re.compile(
+            r"define\s*\(\s*['\"]"
+            r"(?:AUTH_KEY|SECURE_AUTH_KEY|LOGGED_IN_KEY|NONCE_KEY"
+            r"|AUTH_SALT|SECURE_AUTH_SALT|LOGGED_IN_SALT|NONCE_SALT)"
+            r"['\"]\s*,\s*['\"]([^'\"]{32,})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "WordPress Secret Key",
+        "regex": re.compile(
+            r"define\s*\(\s*['\"]SECRET_KEY['\"]\s*,\s*['\"]([^'\"]{10,})['\"]"
+        ),
+        "severity": "HIGH",
+        "min_entropy": 3.0,
+    },
+    {
+        "name": "WordPress DB Host (non-localhost)",
+        # Only flag remote database hosts, not the default localhost / 127.x.x.x
+        "regex": re.compile(
+            r"define\s*\(\s*['\"]DB_HOST['\"]\s*,\s*['\"]"
+            r"(?!localhost(?::\d+)?['\"])(?!127\.\d+\.\d+\.\d+['\"])"
+            r"([^'\"]+)['\"]"
+        ),
+        "severity": "MEDIUM",
+        "min_entropy": 0,
+    },
+    {
+        "name": "WooCommerce Consumer Key",
+        "regex": re.compile(r"ck_[A-Za-z0-9]{40}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "WooCommerce Consumer Secret",
+        "regex": re.compile(r"cs_[A-Za-z0-9]{40}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+
+    # ── Additional SaaS / Platform Tokens ────────────────────────── #
+    {
+        "name": "Mailchimp API Key",
+        "regex": re.compile(r"[A-Za-z0-9]{32}-us[0-9]{1,2}(?![A-Za-z0-9])"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Vercel API Token",
+        "regex": re.compile(r"(?i)vercel[\s_\-:=]{0,20}['\"]([A-Za-z0-9]{24,})['\"]"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Netlify Personal Access Token",
+        "regex": re.compile(r"(?i)netlify[\s_\-:=]{0,20}['\"]([A-Za-z0-9_\-]{40,})['\"]"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Supabase Service Role Key",
+        # Supabase service-role keys are long JWTs, but also issued as plain secrets
+        "regex": re.compile(r"(?i)supabase[\s_\-:=]{0,30}['\"]([A-Za-z0-9_\-.]{40,})['\"]"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Twitch OAuth Token",
+        "regex": re.compile(r"oauth:[A-Za-z0-9]{30,}"),
+        "severity": "HIGH",
+        "min_entropy": 3.5,
+    },
+    {
+        "name": "Sentry Auth Token",
+        "regex": re.compile(r"(?i)sentry[\s_\-:=]{0,20}['\"]([A-Za-z0-9]{64})['\"]"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Doppler Service Token",
+        "regex": re.compile(r"dp\.st\.[A-Za-z0-9_\-]{43}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
+    },
+    {
+        "name": "Doppler Personal Token",
+        "regex": re.compile(r"dp\.pt\.[A-Za-z0-9_\-]{43}"),
+        "severity": "HIGH",
+        "min_entropy": 4.0,
     },
 ]
 
